@@ -1,0 +1,15 @@
+# Render Blueprint (optional). The service can also be created from the
+# dashboard or via the API. Render automatically provides RENDER_EXTERNAL_URL
+# and PORT at runtime, which switch the bot into webhook mode (see bot.py).
+services:
+  - type: web
+    name: telegram-contacts-vcf-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false # set this in the Render dashboard, never commit it
+      - key: PYTHON_VERSION
+        value: 3.12.7

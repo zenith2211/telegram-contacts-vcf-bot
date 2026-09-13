@@ -1,0 +1,11 @@
+# Bot secret — never commit your real token
+token.txt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated output
+*.vcf

@@ -14,9 +14,11 @@ with a ready-to-import .vcf contacts file.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
+import signal
 from io import BytesIO
 from pathlib import Path
 
@@ -157,6 +159,94 @@ async def handle_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+def webhook_secrets(token: str) -> tuple[str, str]:
+    """Derive a stable, non-guessable URL path and secret token from the bot
+    token. We never expose the raw token in the URL. ``secret`` is sent by
+    Telegram in the X-Telegram-Bot-Api-Secret-Token header so we can verify
+    that incoming webhook requests really come from Telegram.
+    """
+    url_path = hashlib.sha256(token.encode()).hexdigest()[:32]
+    secret = hashlib.sha256((token + ":webhook").encode()).hexdigest()
+    return url_path, secret
+
+
+def build_web_app(application: Application, url_path: str, secret: str):
+    """Build the aiohttp app serving the Telegram webhook + health endpoints.
+
+    Endpoints:
+      * POST /<url_path>  – receives updates from Telegram (secret-validated)
+      * GET  /            – health check (returns 200 "OK")
+      * GET  /healthz     – health check (returns 200 "OK")
+
+    The health routes let an uptime monitor (e.g. UptimeRobot) ping the service
+    and get a real 200, which both keeps a free Render instance awake and shows
+    the monitor as "up".
+    """
+    from aiohttp import web  # lazy import: polling-only use doesn't need aiohttp
+
+    async def handle_telegram(request: "web.Request") -> "web.Response":
+        if secret and request.headers.get(
+            "X-Telegram-Bot-Api-Secret-Token"
+        ) != secret:
+            return web.Response(status=403, text="forbidden")
+        try:
+            data = await request.json()
+        except Exception:
+            return web.Response(status=400, text="bad request")
+        update = Update.de_json(data, application.bot)
+        if update:
+            await application.update_queue.put(update)
+        return web.Response(text="ok")
+
+    async def handle_health(_request: "web.Request") -> "web.Response":
+        return web.Response(text="OK")
+
+    web_app = web.Application()
+    web_app.router.add_post(f"/{url_path}", handle_telegram)
+    web_app.router.add_get("/", handle_health)  # allow_head=True by default
+    web_app.router.add_get("/healthz", handle_health)
+    return web_app
+
+
+async def run_webhook_server(
+    application: Application, base_url: str, port: int, url_path: str, secret: str
+) -> None:
+    """Run the bot in webhook mode behind a small aiohttp server."""
+    from aiohttp import web
+
+    web_app = build_web_app(application, url_path, secret)
+
+    async with application:  # handles initialize() + shutdown()
+        await application.start()
+        await application.bot.set_webhook(
+            url=f"{base_url}/{url_path}",
+            secret_token=secret,
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+        )
+
+        runner = web.AppRunner(web_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logger.info("Webhook server listening on 0.0.0.0:%s", port)
+
+        # Block until the process is asked to stop (SIGTERM on Render redeploys).
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, stop.set)
+            except NotImplementedError:
+                pass  # add_signal_handler isn't available on Windows
+        try:
+            await stop.wait()
+        finally:
+            logger.info("Shutting down webhook server")
+            await runner.cleanup()
+            await application.stop()
+
+
 def main() -> None:
     token = load_token()
     app = Application.builder().token(token).build()
@@ -178,21 +268,9 @@ def main() -> None:
 
     if external_url and port:
         external_url = external_url.rstrip("/")
-        # Stable, non-guessable values derived from the token — we never put the
-        # raw token in the URL path. secret_token lets Telegram-signed requests
-        # be verified via the X-Telegram-Bot-Api-Secret-Token header.
-        url_path = hashlib.sha256(token.encode()).hexdigest()[:32]
-        secret = hashlib.sha256((token + ":webhook").encode()).hexdigest()
+        url_path, secret = webhook_secrets(token)
         logger.info("Starting in webhook mode, binding 0.0.0.0:%s", port)
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=url_path,
-            webhook_url=f"{external_url}/{url_path}",
-            secret_token=secret,
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES,
-        )
+        asyncio.run(run_webhook_server(app, external_url, port, url_path, secret))
     else:
         logger.info("Starting in polling mode. Press Ctrl+C to stop.")
         app.run_polling(allowed_updates=Update.ALL_TYPES)

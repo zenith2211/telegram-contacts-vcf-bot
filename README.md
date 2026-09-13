@@ -112,8 +112,29 @@ Or **New → Web Service** with these settings:
 
 **Free plan note:** free web services sleep after ~15 min of inactivity. The
 first message after a nap wakes the service (a ~30–60 s cold start) and Telegram
-retries delivery, so it still gets through — just with a short delay. Upgrade to
-a paid instance to keep it always on.
+retries delivery, so it still gets through — just with a short delay. Keep it
+awake with an uptime monitor (below), or upgrade to a paid instance.
+
+## Keep it awake with UptimeRobot
+
+The bot exposes a health endpoint that returns `200 OK`:
+
+```
+https://<your-service>.onrender.com/healthz
+```
+
+Ping it every few minutes so the free instance never idles out:
+
+1. Sign in at [uptimerobot.com](https://uptimerobot.com).
+2. **+ New monitor** →
+   - **Type:** HTTP(s)
+   - **URL:** `https://<your-service>.onrender.com/healthz`
+   - **Monitoring interval:** 5 minutes
+3. Save. The monitor should show **Up** (green) — the endpoint returns 200.
+
+> Render free instances only sleep after ~15 min of *no* traffic, so a 5-minute
+> ping keeps it continuously awake. (Free-tier instance hours are limited per
+> month; a single always-on service fits within the monthly allowance.)
 
 ## Project files
 
@@ -122,4 +143,5 @@ a paid instance to keep it always on.
 | `bot.py` | The Telegram bot (download file → convert → reply with `.vcf`). |
 | `converter.py` | Pure parsing + vCard logic (no Telegram code). |
 | `test_converter.py` | Tests for the logic — run `python test_converter.py`. |
+| `test_webserver.py` | Tests for the webhook/health server — run `python test_webserver.py`. |
 | `requirements.txt` | Python dependencies. |

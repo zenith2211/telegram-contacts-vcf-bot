@@ -1,2 +1,5 @@
+# Render (long-running webhook server in bot.py)
 python-telegram-bot>=20,<22
 aiohttp>=3.9,<4
+# Vercel serverless function (api/webhook.py)
+requests>=2.31,<3

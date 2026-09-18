@@ -9,3 +9,9 @@ venv/
 
 # Generated output
 *.vcf
+
+# Vercel CLI local project link
+.vercel/
+
+.vercel
+.env*
